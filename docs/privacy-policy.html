@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Privacy Policy — WiFi Auto Switch</title>
+<style>
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 2rem 1.25rem 4rem;
+  line-height: 1.6;
+  color: #1a1a1a;
+}
+h1 { font-size: 1.6rem; margin-bottom: 0.25rem; }
+h2 { font-size: 1.15rem; margin-top: 2rem; }
+.updated { color: #666; font-size: 0.9rem; margin-bottom: 2rem; }
+a { color: #3700B3; }
+</style>
+</head>
+<body>
+<h1>Privacy Policy for WiFi Auto Switch</h1>
+<p class="updated">Last updated: August 13, 2026</p>
+
+<p>Code Optimization Ops ("we," "us," "our") operates the WiFi Auto Switch Android application (the "App"). This page explains what data the App accesses, how it's used, and your choices.</p>
+
+<h2>Summary</h2>
+<p>WiFi Auto Switch does not collect, transmit, or sell your personal data to us or to any third party we control. Wi-Fi network names and passwords you add to the App are stored only on your device, encrypted, and are never uploaded anywhere. The only outside party that receives any data is Google AdMob, which serves the App's ads (see below).</p>
+
+<h2>Data the App accesses on your device</h2>
+<p><strong>Wi-Fi network credentials.</strong> When you add a network in the App, its network name (SSID) and password are stored locally on your device using Android's <code>EncryptedSharedPreferences</code>, protected by hardware-backed encryption. This data never leaves your device, is never sent to us, and is deleted immediately if you remove the network in the App or uninstall the App.</p>
+<p><strong>Wi-Fi connection information.</strong> The App reads your currently connected network's signal strength (RSSI) and, where permitted (see Location, below), its network name, in order to decide whether a stronger saved network is available. This information is used only in real time on-device to manage Wi-Fi network suggestions — it is not logged, stored long-term, or transmitted anywhere.</p>
+<p><strong>Location permission.</strong> The App requests <code>ACCESS_FINE_LOCATION</code> / <code>ACCESS_COARSE_LOCATION</code> and, on supported Android versions, <code>NEARBY_WIFI_DEVICES</code>. This is required by Android's own operating system rules: reading a Wi-Fi network's name is classified by Android as location-adjacent data, so the OS requires this permission before it will disclose it to any app. <strong>The App does not read, use, store, or transmit your GPS location or geographic position in any way.</strong> The permission is used solely to unlock Wi-Fi network name information from the Android OS.</p>
+
+<h2>Background operation</h2>
+<p>The App runs a foreground service (shown as a persistent notification while active) to continuously monitor Wi-Fi signal strength and manage network suggestions in the background. This is required for the App's core auto-switching function and can be stopped at any time from within the App.</p>
+
+<h2>Advertising</h2>
+<p>The App displays ads served by Google AdMob. AdMob may collect device identifiers (such as the advertising ID), general device information, and approximate location for ad personalization and measurement, subject to <a href="https://policies.google.com/privacy">Google's own privacy policy</a>. You can limit ad personalization through your device's Google settings (Settings → Google → Ads).</p>
+
+<h2>Data sharing</h2>
+<p>We do not sell, rent, or share your data with third parties, except as described above for AdMob's ad-serving function.</p>
+
+<h2>Data retention and deletion</h2>
+<p>All data the App stores (saved network credentials, preferences) lives only on your device. Uninstalling the App, or removing a saved network from within the App, permanently deletes that data. We do not retain any copy, since none is ever sent to us.</p>
+
+<h2>Children's privacy</h2>
+<p>The App is not directed at children under 13, and we do not knowingly collect data from children.</p>
+
+<h2>Changes to this policy</h2>
+<p>We may update this policy from time to time. Changes will be posted here with an updated "Last updated" date.</p>
+
+<h2>Contact us</h2>
+<p>Questions about this policy can be sent to <strong>codeoptimizationops@gmail.com</strong>.</p>
+
+</body>
+</html>
