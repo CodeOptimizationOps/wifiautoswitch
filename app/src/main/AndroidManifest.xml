@@ -1,0 +1,53 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <!-- Required alongside FOREGROUND_SERVICE_LOCATION: the service dynamically needs both
+         Wi-Fi info paths (location-gated scanning when Location is on, NEARBY_WIFI_DEVICES-based
+         reads when it's off), so it declares both foregroundServiceType values below. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <!-- usesPermissionFlags="neverForLocation" is required here, not optional: without it,
+         NEARBY_WIFI_DEVICES is treated the same as ACCESS_FINE_LOCATION and stays gated behind
+         the system Location toggle. Declaring neverForLocation — a true statement, since this app
+         never exposes or stores physical location — is specifically what unlocks real SSIDs via
+         ConnectivityManager on API 33+ independent of the Location toggle. ACCESS_FINE_LOCATION
+         is still declared separately below for the scan-results path, which stays Location-gated
+         regardless (see WifiAutoSwitchService's canReadRealWifiInfo/scan logic). -->
+    <uses-permission
+        android:name="android.permission.NEARBY_WIFI_DEVICES"
+        android:usesPermissionFlags="neverForLocation"
+        tools:targetApi="s" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <application
+        android:allowBackup="true"
+        android:label="WifiAutoSwitch"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:theme="@style/Theme.WifiAutoSwitch">
+
+        <meta-data
+            android:name="com.google.android.gms.ads.APPLICATION_ID"
+            android:value="ca-app-pub-3940256099942544~3347511713" />
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <service
+            android:name=".WifiAutoSwitchService"
+            android:exported="false"
+            android:foregroundServiceType="location|connectedDevice" />
+    </application>
+</manifest>

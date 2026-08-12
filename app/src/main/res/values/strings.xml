@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">WiFi Auto Switch</string>
+    <string name="enable_auto_switch">Enable Auto Switch</string>
+    <string name="disable_auto_switch">Disable Auto Switch</string>
+    <string name="permissions_needed">Please grant location and Wi-Fi permissions to enable auto-switching.</string>
+    <string name="notification_channel_name">WiFi Auto Switch Service</string>
+    <string name="notification_channel_description">Runs the Wi-Fi auto-switch service in the foreground.</string>
+    <string name="notification_title">WiFi Auto Switch Active</string>
+    <string name="notification_text">Monitoring network quality and switching when needed.</string>
+</resources>
