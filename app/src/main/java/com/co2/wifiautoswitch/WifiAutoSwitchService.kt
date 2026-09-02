@@ -62,14 +62,10 @@ class WifiAutoSwitchService : Service() {
     // Only switch when a saved network is meaningfully stronger, not just marginally better —
     // avoids flapping between networks with similar signal.
     private val switchMarginDb = 18
-    // Location-off fallback only kicks in once the connection is actually poor — we can't do the
-    // scan-based comparison without Location, so this threshold gates a blunter reset instead.
-    private val poorThresholdRssi = -75
-    // Edge-trigger for the location-off reset: true once a reset has fired for the current poor
-    // streak, so we don't keep resetting every cycle when every saved network is simply weak here
-    // (nothing to gain from repeating it). Cleared the moment RSSI recovers above threshold, which
-    // re-arms the next drop as a fresh trigger.
-    private var resetFiredForCurrentPoorStreak = false
+    // Location-off fallback's decision logic (Scenarios 1 and 2 — out of range of everything, and
+    // connected-but-weak) — extracted into its own class so it's unit-testable independent of
+    // WifiManager/ConnectivityManager. See WeakSignalRecoveryPolicy for the full behavior.
+    private val weakSignalRecoveryPolicy = WeakSignalRecoveryPolicy()
 
     // SSIDs this service currently believes are active as Wi-Fi network suggestions with the OS.
     private val activeSuggestedSsids = mutableSetOf<String>()
@@ -358,17 +354,17 @@ class WifiAutoSwitchService : Service() {
 
     private suspend fun evaluateCurrentNetwork() {
         withContext(Dispatchers.Default) {
-            if (!isConnectedToWifi()) return@withContext
+            val rssi: Int? = if (isConnectedToWifi()) wifiManager.connectionInfo.rssi else null
+            val currentSsid = if (rssi != null) readCurrentSsidIfAvailable() else null
 
-            val rssi = wifiManager.connectionInfo.rssi
-            val currentSsid = readCurrentSsidIfAvailable()
-            Log.d(TAG, "evaluateCurrentNetwork: ssid=$currentSsid rssi=$rssi")
-
-            if (currentSsid != null && currentSsid.isNotBlank() && currentSsid != UNKNOWN_SSID) {
-                observedNetworkStore.recordLastConnectedSsid(currentSsid)
-                val isManaged = credentialStore.getAll().any { it.ssid == currentSsid }
-                if (!isManaged) {
-                    observedNetworkStore.recordObserved(currentSsid)
+            if (rssi != null) {
+                Log.d(TAG, "evaluateCurrentNetwork: ssid=$currentSsid rssi=$rssi")
+                if (currentSsid != null && currentSsid.isNotBlank() && currentSsid != UNKNOWN_SSID) {
+                    observedNetworkStore.recordLastConnectedSsid(currentSsid)
+                    val isManaged = credentialStore.getAll().any { it.ssid == currentSsid }
+                    if (!isManaged) {
+                        observedNetworkStore.recordObserved(currentSsid)
+                    }
                 }
             }
 
@@ -379,27 +375,98 @@ class WifiAutoSwitchService : Service() {
             if (locationManager.isLocationEnabled) {
                 // Can read real SSIDs from scan results, so do the precise thing: compare
                 // signal strength per saved network and narrow suggestions to the strongest.
-                scanAndPruneToClosestNetwork(currentRssi = rssi, currentSsid = currentSsid)
-            } else {
-                // Can't match scan results to SSIDs without Location, so there's no way to know
-                // which saved network is actually strongest nearby. Fall back to a blunter move:
-                // if the connection is poor, reset suggestions and let the OS's own roaming logic
-                // pick among the others — but still exclude the one we know is currently weak
-                // (currentSsid, from the modern API above), so the OS isn't just handed back the
-                // very network we're trying to get away from.
-                if (rssi < poorThresholdRssi) {
-                    // Only fire once per poor streak — if every saved network is genuinely weak
-                    // here, resetting again on every cycle just churns suggestions for no gain.
-                    if (!resetFiredForCurrentPoorStreak) {
-                        resetAllSuggestionsTogether(excludingSsid = currentSsid)
-                        resetFiredForCurrentPoorStreak = true
+                if (rssi != null) {
+                    scanAndPruneToClosestNetwork(currentRssi = rssi, currentSsid = currentSsid)
+                }
+                return@withContext
+            }
+
+            // Can't match scan results to SSIDs without Location, so there's no way to know which
+            // saved network is actually strongest nearby — hand the decision off to
+            // WeakSignalRecoveryPolicy's blunter, RSSI-threshold-only approach (Scenarios 1 & 2).
+            val action = weakSignalRecoveryPolicy.evaluate(
+                isConnected = rssi != null,
+                rssi = rssi ?: 0,
+                currentSsid = currentSsid,
+                nowMs = System.currentTimeMillis()
+            )
+            when (action) {
+                is RecoveryAction.ResetExcluding -> {
+                    // Actively retrying again — clear any stale dead-end alert from an earlier
+                    // streak, since we haven't given up this time (yet).
+                    Log.d(TAG, "WeakSignalRecoveryPolicy: resetting, excluding ${action.ssid}")
+                    cancelWeakSignalAlert()
+                    resetAllSuggestionsTogether(excludingSsid = action.ssid)
+                }
+                RecoveryAction.RestoreAll -> {
+                    // Silent — no notification yet, this might resolve itself quickly. A plain
+                    // add is enough here since it's putting back a genuinely-excluded network.
+                    Log.d(TAG, "WeakSignalRecoveryPolicy: restoring all suggestions")
+                    suggestAllSavedNetworks()
+                }
+                RecoveryAction.LastDitchReset -> {
+                    // Still stuck after the first wait — one more nudge before giving up. Needs
+                    // an actual remove-then-readd churn, not just an add: everything's already
+                    // suggested by this point, so a plain add would be a silent no-op.
+                    Log.d(TAG, "WeakSignalRecoveryPolicy: last-ditch remove-all/readd-all")
+                    resetAllSuggestionsTogether(excludingSsid = null)
+                }
+                RecoveryAction.NotifyDeadEnd -> {
+                    Log.d(TAG, "WeakSignalRecoveryPolicy: dead-end held, notifying user")
+                    postWeakSignalAlert()
+                }
+                RecoveryAction.None -> {
+                    if (rssi != null && rssi >= weakSignalRecoveryPolicy.poorThresholdRssi) {
+                        // Clearly fine now — clear any stale dead-end alert.
+                        cancelWeakSignalAlert()
                     }
-                } else {
-                    // Recovered above threshold — re-arm so the next drop triggers a fresh reset.
-                    resetFiredForCurrentPoorStreak = false
                 }
             }
         }
+    }
+
+    /**
+     * Tapping opens the Wi-Fi quick-settings panel so the user can manually toggle Wi-Fi off/on
+     * themselves — apps can't do this programmatically on Android 10+
+     * (WifiManager.setWifiEnabled() is restricted to system/DPC apps only), and a manual toggle
+     * is a common, effective way to force the OS to redo a full scan/reassociation when it's
+     * stuck on a weak connection.
+     */
+    private fun postWeakSignalAlert() {
+        val channel = NotificationChannel(
+            ALERT_CHANNEL_ID,
+            "Wi-Fi Auto Switch alerts",
+            NotificationManager.IMPORTANCE_HIGH
+        ).apply {
+            description = "Warns about things auto-switch needs your attention for — Location " +
+                "being off, or no strong signal being found among your saved networks."
+        }
+        val manager = getSystemService(NotificationManager::class.java)
+        manager?.createNotificationChannel(channel)
+
+        val pendingIntent = PendingIntent.getActivity(
+            this,
+            0,
+            Intent(Settings.Panel.ACTION_WIFI),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
+        val notification = NotificationCompat.Builder(this, ALERT_CHANNEL_ID)
+            .setContentTitle("No strong Wi-Fi signal found")
+            .setContentText(
+                "None of your saved networks have a good signal here. Tap to toggle Wi-Fi " +
+                    "off and on, which can help it reconnect."
+            )
+            .setSmallIcon(android.R.drawable.ic_dialog_alert)
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true)
+            .build()
+
+        manager?.notify(WEAK_SIGNAL_ALERT_NOTIFICATION_ID, notification)
+    }
+
+    private fun cancelWeakSignalAlert() {
+        getSystemService(NotificationManager::class.java)?.cancel(WEAK_SIGNAL_ALERT_NOTIFICATION_ID)
     }
 
     /**
@@ -490,6 +557,7 @@ class WifiAutoSwitchService : Service() {
         private const val NOTIFICATION_ID = 101
         private const val ALERT_CHANNEL_ID = "wifi_auto_switch_alerts"
         private const val LOCATION_ALERT_NOTIFICATION_ID = 102
+        private const val WEAK_SIGNAL_ALERT_NOTIFICATION_ID = 103
         private const val UNKNOWN_SSID = "<unknown ssid>"
         // Safety cap in case a scan silently never completes — otherwise we'd wait forever.
         private const val SCAN_RESULTS_TIMEOUT_MS = 6_000L

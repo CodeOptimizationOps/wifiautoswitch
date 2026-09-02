@@ -442,7 +442,7 @@ private fun MainScreen(
             AndroidView(factory = { context ->
                 MobileAds.initialize(context) {}
                 AdView(context).apply {
-                    adUnitId = "ca-app-pub-3940256099942544/6300978111"
+                    adUnitId = "ca-app-pub-7082890329942103/4586593717"
                     setAdSize(AdSize.BANNER)
                     loadAd(AdRequest.Builder().build())
                 }
