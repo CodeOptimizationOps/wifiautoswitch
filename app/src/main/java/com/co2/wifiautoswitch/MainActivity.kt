@@ -275,6 +275,18 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+
+        // The persisted "enabled" flag can outlive the actual running service — force-stop, a
+        // reinstall, or the OS reclaiming memory all kill the process without touching this
+        // preference, and onStartCommand() deliberately returns START_NOT_STICKY (see
+        // WifiAutoSwitchService), so nothing else notices or fixes that mismatch on its own.
+        // Reconcile here rather than leaving auto-switch silently dead until the user happens to
+        // manually toggle it off and back on.
+        if (enabledState && !WifiAutoSwitchService.isRunning && checkPermissions()) {
+            android.util.Log.d("WifiAutoSwitchDebug", "onResume: enabled but service not running, restarting")
+            ContextCompat.startForegroundService(this, startServiceIntent)
+        }
+
         // Covers returning to the app after connecting to Wi-Fi via system Settings, e.g. — the
         // LaunchedEffect above only catches the moment auto-switch gets freshly enabled, not
         // every time the app becomes visible again.

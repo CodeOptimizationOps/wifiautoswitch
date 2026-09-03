@@ -76,6 +76,7 @@ class WifiAutoSwitchService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        isRunning = true
         wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
         connectivityManager = applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         credentialStore = NetworkCredentialStore(applicationContext)
@@ -114,6 +115,7 @@ class WifiAutoSwitchService : Service() {
     }
 
     override fun onDestroy() {
+        isRunning = false
         currentNetworkCallback?.let { connectivityManager.unregisterNetworkCallback(it) }
         locationModeReceiver?.let { unregisterReceiver(it) }
         wifiStateReceiver?.let { unregisterReceiver(it) }
@@ -597,6 +599,13 @@ class WifiAutoSwitchService : Service() {
     }
 
     companion object {
+        // In-process only, not persisted — deliberately so. A fresh process start (after being
+        // killed by force-stop, a reinstall, or the OS reclaiming memory) resets this to false by
+        // definition, which is exactly the signal MainActivity needs: the persisted "enabled"
+        // preference can outlive the actual running service, and since onStartCommand() returns
+        // START_NOT_STICKY on purpose, nothing else will notice or fix that mismatch on its own.
+        @Volatile var isRunning: Boolean = false
+            private set
         private const val NOTIFICATION_CHANNEL_ID = "wifi_auto_switch_channel"
         private const val NOTIFICATION_ID = 101
         private const val ALERT_CHANNEL_ID = "wifi_auto_switch_alerts"
