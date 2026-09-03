@@ -14,3 +14,4 @@ build/
 /gradle.zip
 /gradle-9.6.1-bin.zip
 /~
+.claude/settings.local.json
