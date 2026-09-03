@@ -401,7 +401,10 @@ class WifiAutoSwitchService : Service() {
                 RecoveryAction.RestoreAll -> {
                     // Silent — no notification yet, this might resolve itself quickly. A plain
                     // add is enough here since it's putting back a genuinely-excluded network.
+                    // Also fires on a mid-streak recovery (never fully disconnected), so clear any
+                    // stale alert defensively — harmless no-op if nothing was showing.
                     Log.d(TAG, "WeakSignalRecoveryPolicy: restoring all suggestions")
+                    cancelWeakSignalAlert()
                     suggestAllSavedNetworks()
                 }
                 RecoveryAction.LastDitchReset -> {

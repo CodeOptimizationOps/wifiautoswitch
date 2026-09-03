@@ -63,12 +63,15 @@ class WeakSignalRecoveryPolicyTest {
     }
 
     @Test
-    fun `recovering above threshold re-arms a fresh trigger on the next drop`() {
+    fun `recovering above threshold restores the excluded network and re-arms a fresh trigger`() {
+        // If the connection recovers without ever fully disconnecting, Scenario 1's disconnect-
+        // triggered restore never gets a chance to run — this is the only other place the
+        // excluded network can get restored, so it must not be skipped.
         val policy = WeakSignalRecoveryPolicy()
-        policy.evaluate(isConnected = true, rssi = -80, currentSsid = ssid, nowMs = 0) // reset
+        policy.evaluate(isConnected = true, rssi = -80, currentSsid = ssid, nowMs = 0) // reset, excludes ssid
 
         val recovered = policy.evaluate(isConnected = true, rssi = -50, currentSsid = ssid, nowMs = 1_000)
-        assertEquals(RecoveryAction.None, recovered)
+        assertEquals(RecoveryAction.RestoreAll, recovered)
 
         val droppedAgain = policy.evaluate(isConnected = true, rssi = -80, currentSsid = ssid, nowMs = 2_000)
         assertEquals(RecoveryAction.ResetExcluding(ssid), droppedAgain)

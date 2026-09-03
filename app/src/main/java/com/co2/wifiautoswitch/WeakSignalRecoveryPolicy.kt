@@ -126,13 +126,20 @@ class WeakSignalRecoveryPolicy(
         }
 
         if (rssi >= poorThresholdRssi) {
-            // Recovered — re-arm so the next drop starts a fresh streak.
+            // Recovered. If a reset excluded something this streak, restore it now — recovering
+            // without ever fully disconnecting means Scenario 1's disconnect-triggered restore
+            // never got a chance to run, so without this the excluded network would stay
+            // stranded indefinitely (until some *unrelated* future disconnect happened to fix
+            // it). No exclusion happened this streak (rssi never actually dropped below
+            // threshold) means nothing to restore — stay silent, don't spam addNetworkSuggestions
+            // on an already-fully-suggested set.
+            val needsRestore = resetFiredForCurrentPoorStreak
             resetFiredForCurrentPoorStreak = false
             rssiAtLastReconnect = null
             degradedSinceMs = null
             hasRestoredAllAtFloor = false
             exitDeadEnd()
-            return RecoveryAction.None
+            return if (needsRestore) RecoveryAction.RestoreAll else RecoveryAction.None
         }
 
         if (!resetFiredForCurrentPoorStreak) {
