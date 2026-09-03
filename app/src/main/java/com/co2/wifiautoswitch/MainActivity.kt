@@ -111,8 +111,10 @@ class MainActivity : ComponentActivity() {
             ActivityResultContracts.RequestMultiplePermissions()
         ) { permissions ->
             val granted = permissions.entries.all { it.value }
-            if (!granted) {
-                // Handle permission denial appropriately if desired.
+            if (granted) {
+                // Without this, granting permissions did nothing visible — the user had to tap
+                // Enable a second time for it to actually take effect.
+                completeEnable()
             }
         }
 
@@ -341,6 +343,11 @@ class MainActivity : ComponentActivity() {
      * the user didn't actually ask to enable continuous monitoring.
      */
     private fun probeCurrentNetworkThenCheck() {
+        // The service's onCreate() starts a location-typed foreground service, which throws a
+        // SecurityException if ACCESS_FINE_LOCATION/ACCESS_COARSE_LOCATION aren't actually
+        // granted yet — unlike the main Enable button, this probe runs from onResume() and can
+        // fire before the user has ever gone through the permission flow at all.
+        if (!checkPermissions()) return
         ContextCompat.startForegroundService(this, startServiceIntent)
         lifecycleScope.launch {
             delay(2_500)
