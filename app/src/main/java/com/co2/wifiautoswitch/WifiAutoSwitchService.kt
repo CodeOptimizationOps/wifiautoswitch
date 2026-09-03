@@ -588,10 +588,13 @@ class WifiAutoSwitchService : Service() {
             .filterNot { it == bestNetwork.ssid }
             .mapNotNull { ssid -> savedNetworks.find { it.ssid == ssid }?.toSuggestion() }
 
-        removeSuggestionsGracefully(wifiManager, toRemove)
-
+        // Make-before-break: add the new suggestion before removing the old ones, so Android
+        // sees the better option as available before it loses the current one, rather than
+        // dropping the connection first and only then learning what to connect to instead.
         val addStatus = wifiManager.addNetworkSuggestions(listOf(bestNetwork.toSuggestion()))
         Log.d(TAG, "addNetworkSuggestions: ensured ${bestNetwork.ssid} active, status=$addStatus")
+
+        removeSuggestionsGracefully(wifiManager, toRemove)
 
         activeSuggestedSsids.clear()
         activeSuggestedSsids.add(bestNetwork.ssid)
