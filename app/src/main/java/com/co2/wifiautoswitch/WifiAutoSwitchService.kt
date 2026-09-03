@@ -58,7 +58,7 @@ class WifiAutoSwitchService : Service() {
     private val scanBasedMinCheckIntervalMs: Long = 30_000
     // Only switch when a saved network is meaningfully stronger, not just marginally better —
     // avoids flapping between networks with similar signal.
-    private val switchMarginDb = 18
+    private val switchMarginDb = 10
     // When Location is on, scanAndPruneToClosestNetwork narrows suggestions down to just the
     // best network, removing everyone else — unlike the Location-off path, nothing restored them
     // afterward. Mirrors the same fix: unconditionally re-add everyone this many ms after a
