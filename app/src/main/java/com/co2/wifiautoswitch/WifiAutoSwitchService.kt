@@ -25,13 +25,11 @@ import androidx.core.content.getSystemService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 
 private const val TAG = "WifiAutoSwitchDebug"
 
@@ -47,7 +45,6 @@ class WifiAutoSwitchService : Service() {
     private var wifiStateReceiver: BroadcastReceiver? = null
     private lateinit var wifiEnabledFlow: MutableStateFlow<Boolean>
     private var scanResultsReceiver: BroadcastReceiver? = null
-    private val scanResultsSignal = Channel<Unit>(Channel.CONFLATED)
     private var currentNetworkCallback: ConnectivityManager.NetworkCallback? = null
     // A one-off getNetworkCapabilities() query returns redacted WifiInfo regardless of
     // permissions — only a persistently registered callback's delivered onCapabilitiesChanged
@@ -62,6 +59,13 @@ class WifiAutoSwitchService : Service() {
     // Only switch when a saved network is meaningfully stronger, not just marginally better —
     // avoids flapping between networks with similar signal.
     private val switchMarginDb = 18
+    // When Location is on, scanAndPruneToClosestNetwork narrows suggestions down to just the
+    // best network, removing everyone else — unlike the Location-off path, nothing restored them
+    // afterward. Mirrors the same fix: unconditionally re-add everyone this many ms after a
+    // narrowing, regardless of what happens in between, since the switch itself normally
+    // completes in a few seconds — restoring competitors after that is safe.
+    private val narrowReincludeDelayMs = 15_000L
+    private var narrowedAwayAtMs: Long? = null
     // Location-off fallback's decision logic (Scenarios 1 and 2 — out of range of everything, and
     // connected-but-weak) — extracted into its own class so it's unit-testable independent of
     // WifiManager/ConnectivityManager. See WeakSignalRecoveryPolicy for the full behavior.
@@ -118,14 +122,18 @@ class WifiAutoSwitchService : Service() {
     }
 
     /**
-     * Signals scanAndPruneToClosestNetwork the instant scan results are actually ready, instead
-     * of guessing with a fixed delay — startScan() is fire-and-forget and gives no way to know
-     * how long a scan will actually take.
+     * Reacts whenever scan results become available from ANY source — our own startScan() call,
+     * another app's, or Android's own periodic background scanning (roaming evaluation, PNO,
+     * etc., which happens regardless of what we request). Android's scan-throttling budget only
+     * limits how often *we* can call startScan() ourselves; passively reading whatever results
+     * already exist whenever this fires costs nothing against that budget, and the system scans
+     * far more often on its own than our throttled requests alone would allow — so this is how a
+     * newly-appeared strong network actually gets noticed quickly in practice.
      */
     private fun registerScanResultsReceiver() {
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
-                scanResultsSignal.trySend(Unit)
+                serviceScope.launch { reactToFreshScanResultsIfApplicable() }
             }
         }
         scanResultsReceiver = receiver
@@ -135,6 +143,16 @@ class WifiAutoSwitchService : Service() {
             IntentFilter(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION),
             ContextCompat.RECEIVER_NOT_EXPORTED
         )
+    }
+
+    private suspend fun reactToFreshScanResultsIfApplicable() {
+        if (!locationManager.isLocationEnabled) return
+        if (!isConnectedToWifi()) return
+        val rssi = wifiManager.connectionInfo.rssi
+        val currentSsid = readCurrentSsidIfAvailable()
+        withContext(Dispatchers.Default) {
+            pruneToClosestNetworkFromScanResults(currentRssi = rssi, currentSsid = currentSsid)
+        }
     }
 
     /**
@@ -307,24 +325,42 @@ class WifiAutoSwitchService : Service() {
         while (true) {
             wifiEnabledFlow.first { it }
             maybeEvaluateCurrentNetwork()
-            delay(5_000)
+            // Checking the clock costs nothing against Android's scan-throttling budget — only
+            // an actual startScan() call does. A tight tick here just minimizes how much slop
+            // gets added on top of scanBasedMinCheckIntervalMs once that floor clears.
+            delay(1_000)
         }
     }
 
     /**
      * Shared entry point for both trigger paths (the timer and the RSSI-change callback). With
      * Location on, evaluation does an active scan, so it's capped to once per
-     * scanBasedMinCheckIntervalMs to stay within Android's background scan throttling budget.
-     * With Location off, evaluation only reads the current connection's RSSI (no scan), so there's
-     * no throttling budget to protect — it reacts immediately on every trigger.
+     * scanBasedMinCheckIntervalMs to stay within Android's background scan throttling budget —
+     * that ceiling is a hard OS-enforced average (4 scans per rolling 2-minute window for a
+     * foreground app, far stricter when backgrounded), not something safe to scan faster than
+     * sustained, regardless of app state. With Location off, evaluation only reads the current
+     * connection's RSSI (no scan), so there's no throttling budget to protect — it reacts
+     * immediately on every trigger.
      */
     private suspend fun maybeEvaluateCurrentNetwork() {
         val now = System.currentTimeMillis()
+        // Independent of the scan floor below — restoring suggestions isn't a scan, so it isn't
+        // subject to the same budget, and shouldn't wait on it either.
+        checkPendingNarrowReinclude(now)
+
         val locationOn = locationManager.isLocationEnabled
         if (!locationOn || now - lastCheckTime >= scanBasedMinCheckIntervalMs) {
             evaluateCurrentNetwork()
             lastCheckTime = now
         }
+    }
+
+    private fun checkPendingNarrowReinclude(nowMs: Long) {
+        val narrowedAt = narrowedAwayAtMs ?: return
+        if (nowMs - narrowedAt < narrowReincludeDelayMs) return
+        Log.d(TAG, "Re-including networks narrowed away ${nowMs - narrowedAt}ms ago")
+        suggestAllSavedNetworks()
+        narrowedAwayAtMs = null
     }
 
     /**
@@ -375,8 +411,10 @@ class WifiAutoSwitchService : Service() {
             if (locationManager.isLocationEnabled) {
                 // Can read real SSIDs from scan results, so do the precise thing: compare
                 // signal strength per saved network and narrow suggestions to the strongest.
+                // This only triggers the scan — the actual decision happens reactively whenever
+                // results land (see registerScanResultsReceiver), from this scan or any other.
                 if (rssi != null) {
-                    scanAndPruneToClosestNetwork(currentRssi = rssi, currentSsid = currentSsid)
+                    triggerScanForClosestNetwork()
                 }
                 return@withContext
             }
@@ -507,27 +545,29 @@ class WifiAutoSwitchService : Service() {
     }
 
     /**
-     * Scan, then narrow the active Wi-Fi suggestions down to whichever saved network currently
-     * has the strongest signal, so the OS is nudged toward roaming to it — evaluated every check
-     * regardless of whether the current connection is "poor," so a much stronger saved network
-     * gets picked up even if the current one is merely adequate. There is no API to force an
-     * immediate connection to a suggested network — this only biases the system's own roaming
-     * decision.
+     * Fire-and-forget: kicks off a scan, then returns immediately. The actual decision runs
+     * later, reactively, whenever results actually land — see registerScanResultsReceiver and
+     * pruneToClosestNetworkFromScanResults. Since that reacts to results from any source (not
+     * just this call), this is mostly a backstop for when nothing else has scanned recently.
      */
-    private suspend fun scanAndPruneToClosestNetwork(currentRssi: Int, currentSsid: String?) {
+    private fun triggerScanForClosestNetwork() {
         if (!wifiManager.isWifiEnabled) return
-
-        // Drain any stale signal from an earlier, unrelated scan before starting ours, so the
-        // wait below can't return instantly on a leftover event that isn't for this scan.
-        scanResultsSignal.tryReceive()
-
         val scanStarted = wifiManager.startScan()
         Log.d(TAG, "startScan() returned $scanStarted")
-        if (!scanStarted) return
+    }
 
-        val gotResults = withTimeoutOrNull(SCAN_RESULTS_TIMEOUT_MS) { scanResultsSignal.receive() } != null
-        Log.d(TAG, "scan results ${if (gotResults) "arrived" else "timed out, using best-effort data"}")
-
+    /**
+     * Narrows the active Wi-Fi suggestions down to whichever saved network currently has the
+     * strongest signal, so the OS is nudged toward roaming to it — evaluated every time scan
+     * results are available, regardless of whether the current connection is "poor," so a much
+     * stronger saved network gets picked up even if the current one is merely adequate. There is
+     * no API to force an immediate connection to a suggested network — this only biases the
+     * system's own roaming decision.
+     *
+     * This removes every other saved network's suggestion, leaving only the chosen one — see
+     * checkPendingNarrowReinclude for how those get restored afterward.
+     */
+    private fun pruneToClosestNetworkFromScanResults(currentRssi: Int, currentSsid: String?) {
         val scanResults = wifiManager.scanResults
         val savedNetworks = credentialStore.getAll()
         val savedSsids = savedNetworks.map { it.ssid }.toSet()
@@ -553,6 +593,7 @@ class WifiAutoSwitchService : Service() {
 
         activeSuggestedSsids.clear()
         activeSuggestedSsids.add(bestNetwork.ssid)
+        narrowedAwayAtMs = System.currentTimeMillis()
     }
 
     companion object {
@@ -562,7 +603,5 @@ class WifiAutoSwitchService : Service() {
         private const val LOCATION_ALERT_NOTIFICATION_ID = 102
         private const val WEAK_SIGNAL_ALERT_NOTIFICATION_ID = 103
         private const val UNKNOWN_SSID = "<unknown ssid>"
-        // Safety cap in case a scan silently never completes — otherwise we'd wait forever.
-        private const val SCAN_RESULTS_TIMEOUT_MS = 6_000L
     }
 }
